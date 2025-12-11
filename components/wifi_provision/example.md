@@ -1,19 +1,16 @@
-
-#include <nvs.h>
-#include <nvs_flash.h>
-#include <string.h>
-#include "freertos/FreeRTOS.h"
-#include "esp_wifi.h"
-#include "esp_log.h"
-#include "wifi_provision.h"
-
-#define WIFI_SSID "REDMI K80"
-#define WIFI_PASS "1902Pan."
-#define MAX_RETRY 5
-
-static const char *TAG = "Main-App";
-const int WIFI_CONNECTED_BIT = BIT0;
-
+```c++
+// 使用案例 
+//1、 同步
+void app_main(void)
+{
+    esp_err_t rc = wifi_provision_sta(WIFI_SSID, WIFI_PASS, 30);
+    if (rc != ESP_OK)
+    {
+        ESP_LOGE(TAG, "provision fail, reboot");
+        esp_restart();
+    }
+}
+//2、 异步
 void business_task(void *pv)
 {
     /* 等待连接成功再初始化 MQTT / 启动摄像头 */
@@ -41,7 +38,7 @@ void app_main(void)
     }
 
     /* 1. 启动异步 Wi-Fi */
-    wifi_async_sta("Readme K80", "1902Pan.");
+    wifi_async_start("Readme K80", "1902Pan.");
 
     /* 2. 继续做别的（LED、外设、日志……） */
     ESP_LOGI(TAG, "Wi-Fi 已提交，主线程继续运行");
@@ -49,3 +46,5 @@ void app_main(void)
     /* 3. 创建业务任务，等待网络就绪 */
     xTaskCreate(business_task, "biz", 4096, NULL, 5, NULL);
 }
+
+```

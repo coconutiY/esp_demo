@@ -12,20 +12,31 @@
 #include "esp_netif.h"
 #include "nvs_flash.h"
 #include "wifi_provision.h"
-
 #include <lwip/ip_addr.h>
-#define MAX_RETRY 5        /* 内部重试次数 */
-#define CONNECTED_BIT BIT0 /* 事件组位 */
+
+/* 内部重试次数 */
+#define MAX_RETRY 5
+/* 事件组位 */
+#define CONNECTED_BIT BIT0
 
 static const char *TAG = "wifi_provision";
-static EventGroupHandle_t s_wifi_event_group; /* 内部事件组 */
-static int s_retry_num = 0; /* 当前重试计数 */
+/* 内部事件组*/
+static EventGroupHandle_t s_wifi_event_group;
+/* wifi状态句柄 */
+static wifi_async_state_t wifi_state = WIFI_ASYNC_IDLE;
+/* 当前重试计数 */
+static int s_retry_num = 0;
+
+
+static char g_ssid[32] = {0};
+static char g_pass[64] = {0};
+
 
 /* 内部事件回调：仅用于置位/重试 */
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data) {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        wifi_event_sta_disconnected_t *ev = (wifi_event_sta_disconnected_t *) event_data;
+        wifi_event_sta_disconnected_t *ev = event_data;
         ESP_LOGW(TAG, "Wi-Fi disconnected, reason=%d", ev->reason);
 
         if (s_retry_num < MAX_RETRY) {
@@ -33,13 +44,15 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
             s_retry_num++;
             ESP_LOGI(TAG, "retry to connect (%d/%d)", s_retry_num, MAX_RETRY);
         } else {
-            xEventGroupSetBits(s_wifi_event_group, CONNECTED_BIT); /* 通知外部失败 */
+            /* 通知外部失败 */
+            xEventGroupSetBits(s_wifi_event_group, CONNECTED_BIT);
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t *event = (ip_event_got_ip_t *) event_data;
+        ip_event_got_ip_t *event = event_data;
         ESP_LOGI(TAG, "Got IP:" IPSTR, IP2STR(&event->ip_info.ip));
         s_retry_num = 0;
-        xEventGroupSetBits(s_wifi_event_group, CONNECTED_BIT); /* 通知外部成功 */
+        /* 通知外部成功 */
+        xEventGroupSetBits(s_wifi_event_group, CONNECTED_BIT);
     }
 }
 
@@ -125,4 +138,48 @@ esp_err_t wifi_provision_sta(const char *ssid, const char *pass, int timeout_sec
     }
     ESP_LOGE(TAG, "Wi-Fi provision FAILED (timeout or reach max retry)");
     return ESP_FAIL;
+}
+
+esp_err_t wifi_async_sta(const char *ssid, const char *pass) {
+    if (ssid == NULL) return ESP_ERR_INVALID_ARG;
+
+    strncpy(g_ssid, ssid, sizeof(g_ssid) - 1);
+    if (pass) strncpy(g_pass, pass, sizeof(g_pass) - 1);
+
+    /* 1. 保证 NVS / netif / 事件循环已初始化（放在第一次调用） */
+    static bool inited = false;
+    if (!inited) {
+        ESP_ERROR_CHECK(esp_netif_init());
+        ESP_ERROR_CHECK(esp_event_loop_create_default());
+        esp_netif_create_default_wifi_sta();
+        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+        /* 注册事件：注意用 INSTANCE 防止重复 */
+        esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                            &wifi_event_handler, NULL, NULL);
+        esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                            &wifi_event_handler, NULL, NULL);
+        inited = true;
+    }
+
+    /* 2. 设置 STA 参数并启动 */
+    wifi_config_t wifi_config = {0};
+    strncpy((char *) wifi_config.sta.ssid, g_ssid, sizeof(wifi_config.sta.ssid));
+    strncpy((char *) wifi_config.sta.password, g_pass, sizeof(wifi_config.sta.password));
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    /* 3. 发起连接，立即返回 */
+    wifi_state = WIFI_ASYNC_CONNECTING;
+    ESP_ERROR_CHECK(esp_wifi_connect());
+    ESP_LOGI(TAG, "async connect started");
+    return ESP_OK;
+}
+
+
+wifi_async_state_t wifi_async_get_state(void) {
+    return wifi_state;
 }
