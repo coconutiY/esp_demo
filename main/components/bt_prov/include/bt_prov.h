@@ -26,6 +26,7 @@ typedef struct {
 esp_err_t bt_prov_init(const bt_prov_config_t *config);
 esp_err_t bt_prov_start(void);
 esp_err_t bt_prov_stop(void);
+esp_err_t bt_prov_clear_credentials(void);
 
 #ifdef __cplusplus
 }

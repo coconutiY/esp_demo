@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include "esp_event.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "esp_bt.h"
@@ -15,6 +16,10 @@
 
 static const char *TAG = "bt_prov";
 #define DEFAULT_DEVICE_NAME "ESP32_PROVISION"
+
+#define BT_PROV_NVS_NS    "bt_prov"
+#define BT_PROV_NVS_SSID  "ssid"
+#define BT_PROV_NVS_PASS  "pass"
 
 #define GATTS_SERVICE_UUID_PROV   0x00FF
 #define GATTS_CHAR_UUID_SSID      0xFF01
@@ -107,6 +112,59 @@ static esp_gatts_attr_db_t gatt_db[IDX_NB] = {
           MAX_STATUS_LEN, sizeof(s_status), (uint8_t *)s_status}},
 };
 
+static esp_err_t bt_prov_load_creds(char *ssid, size_t ssid_sz, char *pass, size_t pass_sz)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(BT_PROV_NVS_NS, NVS_READONLY, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+    size_t sl = ssid_sz, pl = pass_sz;
+    err = nvs_get_str(handle, BT_PROV_NVS_SSID, ssid, &sl);
+    if (err == ESP_OK) {
+        err = nvs_get_str(handle, BT_PROV_NVS_PASS, pass, &pl);
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            /* SSID 存在但密码缺失（开放网络）— 视为空密码 */
+            pass[0] = '\0';
+            err = ESP_OK;
+        }
+    }
+    nvs_close(handle);
+    return err;
+}
+
+static esp_err_t bt_prov_save_creds(const char *ssid, const char *pass)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(BT_PROV_NVS_NS, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nvs_set_str(handle, BT_PROV_NVS_SSID, ssid ? ssid : "");
+    if (err == ESP_OK) {
+        err = nvs_set_str(handle, BT_PROV_NVS_PASS, pass ? pass : "");
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return err;
+}
+
+static esp_err_t bt_prov_erase_creds(void)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(BT_PROV_NVS_NS, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+    nvs_erase_key(handle, BT_PROV_NVS_SSID);
+    nvs_erase_key(handle, BT_PROV_NVS_PASS);
+    err = nvs_commit(handle);
+    nvs_close(handle);
+    return err;
+}
+
 static void bt_prov_send_event(bt_prov_event_t event, esp_err_t err, const char *info)
 {
     if (s_config.event_cb) {
@@ -161,6 +219,12 @@ static void bt_prov_wifi_event_handler(void *arg, esp_event_base_t event_base,
         char ip_str[32];
         esp_ip4addr_ntoa(&got_ip->ip_info.ip, ip_str, sizeof(ip_str));
         ESP_LOGI(TAG, "Wi-Fi connected, IP: %s", ip_str);
+
+        esp_err_t save_err = bt_prov_save_creds(s_ssid, s_password);
+        if (save_err != ESP_OK) {
+            ESP_LOGW(TAG, "Save credentials to NVS failed: %s", esp_err_to_name(save_err));
+        }
+
         bt_prov_update_status("wifi connected");
         bt_prov_send_event(BT_PROV_EVENT_WIFI_CONNECTED, ESP_OK, ip_str);
         bt_prov_send_event(BT_PROV_EVENT_PROVISION_COMPLETE, ESP_OK, s_ssid);
@@ -450,6 +514,22 @@ esp_err_t bt_prov_init(const bt_prov_config_t *config)
     bt_prov_update_status("initialized");
     bt_prov_send_event(BT_PROV_EVENT_STARTED, ESP_OK, NULL);
     s_start_requested = true;
+
+    /* 尝试加载已保存的凭据并自动重连 */
+    char stored_ssid[MAX_SSID_LEN + 1] = {0};
+    char stored_pass[MAX_PASS_LEN + 1] = {0};
+    if (bt_prov_load_creds(stored_ssid, sizeof(stored_ssid), stored_pass, sizeof(stored_pass)) == ESP_OK
+            && stored_ssid[0] != '\0') {
+        ESP_LOGI(TAG, "Found stored credentials, auto-connecting to SSID: %s", stored_ssid);
+        strncpy(s_ssid, stored_ssid, sizeof(s_ssid) - 1);
+        s_ssid[sizeof(s_ssid) - 1] = '\0';
+        strncpy(s_password, stored_pass, sizeof(s_password) - 1);
+        s_password[sizeof(s_password) - 1] = '\0';
+        bt_prov_try_connect();
+    } else {
+        ESP_LOGI(TAG, "No stored credentials, waiting for BLE provisioning");
+    }
+
     return ESP_OK;
 }
 
@@ -472,4 +552,14 @@ esp_err_t bt_prov_stop(void)
     }
     s_start_requested = false;
     return esp_ble_gap_stop_advertising();
+}
+
+esp_err_t bt_prov_clear_credentials(void)
+{
+    s_ssid[0] = '\0';
+    s_password[0] = '\0';
+    if (s_wifi_started) {
+        esp_wifi_disconnect();
+    }
+    return bt_prov_erase_creds();
 }

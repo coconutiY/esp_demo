@@ -2,6 +2,11 @@
 #include "esp_camera.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "driver/ledc.h"
+#include "driver/i2c_master.h"
+#include "driver/gpio.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -102,8 +107,199 @@ static const httpd_uri_t uri_stream = {
     .user_ctx = NULL,
 };
 
+static void diag_camera_bus(void)
+{
+    ESP_LOGI(TAG, "--- Camera bus diagnostic ---");
+
+    /* 1) 在 XCLK 引脚输出 10MHz，让摄像头能上电启动内部时序 */
+    ledc_timer_config_t t = {
+        .speed_mode      = LEDC_LOW_SPEED_MODE,
+        .duty_resolution = LEDC_TIMER_1_BIT,
+        .timer_num       = LEDC_TIMER_0,
+        .freq_hz         = 10000000,
+        .clk_cfg         = LEDC_AUTO_CLK,
+    };
+    esp_err_t err = ledc_timer_config(&t);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "diag: ledc timer init failed: %s", esp_err_to_name(err));
+        return;
+    }
+    ledc_channel_config_t c = {
+        .gpio_num   = CAM_PIN_XCLK,
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel    = LEDC_CHANNEL_0,
+        .intr_type  = LEDC_INTR_DISABLE,
+        .timer_sel  = LEDC_TIMER_0,
+        .duty       = 1,
+        .hpoint     = 0,
+    };
+    err = ledc_channel_config(&c);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "diag: ledc channel init failed: %s", esp_err_to_name(err));
+        return;
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));  /* 摄像头电源 / PLL 稳定 */
+
+    /* 2) 在 SDA/SCL 上扫描 7-bit I2C 地址 */
+    i2c_master_bus_config_t bus_cfg = {
+        .clk_source                   = I2C_CLK_SRC_DEFAULT,
+        .i2c_port                     = I2C_NUM_0,
+        .sda_io_num                   = CAM_PIN_SIOD,
+        .scl_io_num                   = CAM_PIN_SIOC,
+        .glitch_ignore_cnt            = 7,
+        .flags.enable_internal_pullup = true,
+    };
+    i2c_master_bus_handle_t bus = NULL;
+    err = i2c_new_master_bus(&bus_cfg, &bus);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "diag: i2c bus init failed: %s", esp_err_to_name(err));
+        ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Scanning I2C on SDA=%d SCL=%d (XCLK=10MHz on GPIO%d):",
+             CAM_PIN_SIOD, CAM_PIN_SIOC, CAM_PIN_XCLK);
+    int found = 0;
+    for (uint16_t addr = 1; addr < 127; addr++) {
+        if (i2c_master_probe(bus, addr, 30) == ESP_OK) {
+            ESP_LOGI(TAG, "  >> device responded at 7-bit addr 0x%02X", addr);
+            found++;
+        }
+    }
+    if (found == 0) {
+        ESP_LOGW(TAG, "  no I2C device on the camera bus");
+        ESP_LOGW(TAG, "  => sensor not powered, not wired, or FPC reversed");
+    } else {
+        ESP_LOGI(TAG, "  %d device(s) found on bus", found);
+    }
+
+    /* 清理，让 esp_camera_init 接管 */
+    i2c_del_master_bus(bus);
+    ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+    ESP_LOGI(TAG, "--- End diagnostic ---");
+}
+
+static int try_wake_camera(void)
+{
+    /* 候选 GPIO：未被摄像头/USB-JTAG/strapping/PSRAM 占用，且在 Goouuu Tech S3-CAM
+       上可能引出的脚。如果某个脚在你的板子上被其它电路占用，副作用一般是无害的 —
+       因为我们只是输出 0/1 几十毫秒。 */
+    static const int candidates[] = {1, 2, 14, 21, 38, 39, 40, 41, 42, 47};
+    static const uint8_t sensor_addrs[] = {
+        0x21,  /* GC0308 */
+        0x30,  /* OV2640 */
+        0x3C,  /* OV3660 / OV5640 */
+        0x36,  /* OV7670 */
+        0x42,  /* OV7725 */
+        0x60,  /* BF3005 / NT99141 写地址 */
+    };
+
+    ESP_LOGI(TAG, "--- GPIO wake-up attempt ---");
+
+    /* 起 XCLK 让摄像头有时钟可用 */
+    ledc_timer_config_t t = {
+        .speed_mode      = LEDC_LOW_SPEED_MODE,
+        .duty_resolution = LEDC_TIMER_1_BIT,
+        .timer_num       = LEDC_TIMER_0,
+        .freq_hz         = 10000000,
+        .clk_cfg         = LEDC_AUTO_CLK,
+    };
+    if (ledc_timer_config(&t) != ESP_OK) {
+        ESP_LOGE(TAG, "wake: ledc timer failed");
+        return -1;
+    }
+    ledc_channel_config_t c = {
+        .gpio_num   = CAM_PIN_XCLK,
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel    = LEDC_CHANNEL_0,
+        .intr_type  = LEDC_INTR_DISABLE,
+        .timer_sel  = LEDC_TIMER_0,
+        .duty       = 1,
+        .hpoint     = 0,
+    };
+    if (ledc_channel_config(&c) != ESP_OK) {
+        ESP_LOGE(TAG, "wake: ledc channel failed");
+        return -1;
+    }
+
+    i2c_master_bus_config_t bus_cfg = {
+        .clk_source                   = I2C_CLK_SRC_DEFAULT,
+        .i2c_port                     = I2C_NUM_0,
+        .sda_io_num                   = CAM_PIN_SIOD,
+        .scl_io_num                   = CAM_PIN_SIOC,
+        .glitch_ignore_cnt            = 7,
+        .flags.enable_internal_pullup = true,
+    };
+    i2c_master_bus_handle_t bus = NULL;
+    if (i2c_new_master_bus(&bus_cfg, &bus) != ESP_OK) {
+        ESP_LOGE(TAG, "wake: i2c bus init failed");
+        ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+        return -1;
+    }
+
+    int hit_gpio = -1, hit_level = -1, hit_addr = -1;
+
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]) && hit_gpio < 0; i++) {
+        int gpio = candidates[i];
+        gpio_config_t gcfg = {
+            .pin_bit_mask = 1ULL << gpio,
+            .mode         = GPIO_MODE_OUTPUT,
+            .pull_up_en   = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type    = GPIO_INTR_DISABLE,
+        };
+        if (gpio_config(&gcfg) != ESP_OK) {
+            ESP_LOGW(TAG, "wake: gpio%d config failed, skip", gpio);
+            continue;
+        }
+
+        for (int level = 0; level <= 1 && hit_gpio < 0; level++) {
+            gpio_set_level(gpio, level);
+            vTaskDelay(pdMS_TO_TICKS(80));  /* 让 sensor 反应 */
+
+            for (size_t k = 0; k < sizeof(sensor_addrs); k++) {
+                if (i2c_master_probe(bus, sensor_addrs[k], 20) == ESP_OK) {
+                    hit_gpio  = gpio;
+                    hit_level = level;
+                    hit_addr  = sensor_addrs[k];
+                    break;
+                }
+            }
+            ESP_LOGI(TAG, "  GPIO%d driven %s -> %s",
+                     gpio,
+                     level ? "HIGH" : "LOW",
+                     hit_addr >= 0 ? "SENSOR FOUND" : "no response");
+        }
+
+        if (hit_gpio < 0) {
+            /* 没用，恢复为输入 */
+            gpio_reset_pin(gpio);
+        }
+    }
+
+    i2c_del_master_bus(bus);
+    ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+
+    if (hit_gpio >= 0) {
+        ESP_LOGI(TAG, "*** WAKE-UP SUCCESS ***");
+        ESP_LOGI(TAG, "*** sensor 0x%02X responded when GPIO%d = %s",
+                 hit_addr, hit_gpio, hit_level ? "HIGH" : "LOW");
+        ESP_LOGI(TAG, "*** keep this GPIO at the same level for esp_camera_init");
+        ESP_LOGI(TAG, "*** suggest: set CAM_PIN_PWDN = %d (or RESET) and adjust polarity",
+                 hit_gpio);
+        /* 保持该 GPIO 不重置，esp_camera_init 接下来就能扫到 sensor */
+    } else {
+        ESP_LOGE(TAG, "*** WAKE-UP FAILED — none of the candidate GPIOs help");
+        ESP_LOGE(TAG, "*** very likely hardware fault: dead sensor, broken SDA/SCL trace, or dead camera LDO");
+    }
+    return hit_gpio;
+}
+
 esp_err_t camera_stream_init(void)
 {
+    diag_camera_bus();
+    try_wake_camera();
+
     camera_config_t config = {
         .pin_pwdn       = CAM_PIN_PWDN,
         .pin_reset      = CAM_PIN_RESET,
