@@ -46,9 +46,9 @@ export function useBatchConfig() {
     devices: BleDevice[],
     config: EspConfig,
     connectFn: (id: string) => Promise<boolean>,
-    configFn: (server: any, config: EspConfig) => Promise<{ success: boolean; message: string }>
+    configFn: (deviceId: string, config: EspConfig) => Promise<{ success: boolean; message: string }>
   ) {
-    const targets = devices.filter(d => d.isConnected)
+    const targets = devices
     progress.value = {
       total: targets.length,
       success: 0,
@@ -72,7 +72,7 @@ export function useBatchConfig() {
           throw new Error('连接失败')
         }
 
-        const result = await configFn(null, config)
+        const result = await configFn(device.id, config)
         if (result.success) {
           progress.value.success++
           device.configStatus = 'success'

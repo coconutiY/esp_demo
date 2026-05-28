@@ -43,10 +43,13 @@ declare global {
     connect(): Promise<BluetoothRemoteGATTServer>
     disconnect(): void
     getPrimaryService(service: string): Promise<BluetoothRemoteGATTService>
+    getPrimaryServices(): Promise<BluetoothRemoteGATTService[]>
   }
 
   interface BluetoothRemoteGATTService {
+    uuid: string
     getCharacteristic(characteristic: string): Promise<BluetoothRemoteGATTCharacteristic>
+    getCharacteristics(): Promise<BluetoothRemoteGATTCharacteristic[]>
   }
 
   interface BluetoothRemoteGATTCharacteristic extends EventTarget {
@@ -65,6 +68,7 @@ const devices = ref<BleDevice[]>([])
 const isScanning = ref(false)
 const error = ref<string | null>(null)
 const deviceServers = new Map<string, BluetoothRemoteGATTServer>()
+const deviceObjects = new Map<string, BluetoothDevice>
 
 export function useBLE() {
   const discoveredDevices = computed(() => devices.value)
@@ -76,9 +80,10 @@ export function useBLE() {
 
     try {
       const device = await navigator.bluetooth.requestDevice({
-        filters: [{ namePrefix: 'ESP32' }],
+        acceptAllDevices: true,
         optionalServices: ['0000ffe0-0000-1000-8000-00805f9b34fb']
       })
+      console.log('[BLE] picked device:', { id: device.id, name: device.name })
 
       device.addEventListener('gattserverdisconnected', () => {
         const dev = devices.value.find((d: BleDevice) => d.id === device.id)
@@ -106,11 +111,12 @@ export function useBLE() {
   }
 
   function addDevice(device: BluetoothDevice) {
+    deviceObjects.set(device.id, device)
     const existing = devices.value.find((d: BleDevice) => d.id === device.id)
     if (!existing) {
       devices.value.push({
         id: device.id,
-        name: device.name || 'Unknown ESP32',
+        name: device.name || `ESP32 (${device.id.slice(0, 6)})`,
         rssi: 0,
         isConnected: false,
         isConfiguring: false,
@@ -124,13 +130,23 @@ export function useBLE() {
       const dev = devices.value.find((d: BleDevice) => d.id === deviceId)
       if (!dev) return false
 
-      const device = await navigator.bluetooth.getDevice({ deviceId })
-      const gatt = await device.gatt!.connect()
+      const device = deviceObjects.get(deviceId)
+      if (!device) {
+        error.value = '设备对象丢失，请重新扫描'
+        console.error('[BLE] no cached device for', deviceId)
+        return false
+      }
+      if (!device.gatt) {
+        error.value = 'GATT 不可用'
+        return false
+      }
+      const gatt = await device.gatt.connect()
       deviceServers.set(deviceId, gatt)
       dev.isConnected = true
       return true
     } catch (e: unknown) {
       const err = e as Error
+      console.error('[BLE] connect failed:', err)
       error.value = err.message
       return false
     }
