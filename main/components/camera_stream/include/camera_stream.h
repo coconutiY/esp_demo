@@ -1,6 +1,7 @@
 #pragma once
 #include "esp_err.h"
 
+esp_err_t http_server_start(void);
 esp_err_t camera_stream_init(void);
 esp_err_t camera_stream_start(void);
 void      camera_stream_stop(void);
