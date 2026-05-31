@@ -46,12 +46,36 @@ esp_err_t face_detect_jpeg(const uint8_t *jpeg_in, size_t jpeg_len,
     uint8_t *rgb888 = NULL;
     uint8_t *jpeg_out_buf = NULL;
 
-    // 1. JPEG 解码到 RGB888
+    // 0. 先从 JPEG 头解析出实际尺寸，计算所需 buffer 大小
+    esp_jpeg_image_cfg_t info_cfg = {
+        .indata = (uint8_t *)jpeg_in,
+        .indata_size = jpeg_len,
+        .out_format = JPEG_IMAGE_FORMAT_RGB888,
+        .out_scale = JPEG_IMAGE_SCALE_0,
+    };
+    esp_jpeg_image_output_t info_out;
+    ret = esp_jpeg_get_image_info(&info_cfg, &info_out);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to get JPEG info: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    int width = info_out.width;
+    int height = info_out.height;
+    size_t required_size = info_out.output_len;  // = width * height * 3 字节
+
+    // 1. 分配正好够用的 RGB888 buffer
+    rgb888 = heap_caps_malloc(required_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!rgb888) {
+        ESP_LOGE(TAG, "Failed to allocate %zu bytes for RGB888 output", required_size);
+        return ESP_ERR_NO_MEM;
+    }
+
+    // 2. JPEG 解码到预分配的 RGB888 buffer
     esp_jpeg_image_cfg_t jpeg_cfg = {
         .indata = (uint8_t *)jpeg_in,
         .indata_size = jpeg_len,
-        .outbuf = NULL,  // 自动分配
-        .outbuf_size = 0,
+        .outbuf = rgb888,
+        .outbuf_size = required_size,
         .out_format = JPEG_IMAGE_FORMAT_RGB888,
         .out_scale = JPEG_IMAGE_SCALE_0,
         .flags = {
@@ -63,15 +87,11 @@ esp_err_t face_detect_jpeg(const uint8_t *jpeg_in, size_t jpeg_len,
     ret = esp_jpeg_decode(&jpeg_cfg, &outimg);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "JPEG decode failed: %s", esp_err_to_name(ret));
+        free(rgb888);
         return ret;
     }
 
-    rgb888 = jpeg_cfg.outbuf;  // 输出在 cfg.outbuf
-    int width = outimg.width;
-    int height = outimg.height;
-    ESP_LOGI(TAG, "Decoded JPEG: %dx%d", width, height);
-
-    // 2. 人脸检测（TODO: 调用 esp-dl API）
+    // 3. 人脸检测（TODO: 调用 esp-dl API）
     *box_count = 0;
     // 临时：假设检测到一个人脸用于测试
     if (max_boxes > 0) {
@@ -83,15 +103,15 @@ esp_err_t face_detect_jpeg(const uint8_t *jpeg_in, size_t jpeg_len,
         *box_count = 1;
     }
 
-    // 3. 画框
+    // 4. 画框
     for (int i = 0; i < *box_count; i++) {
         draw_box(rgb888, width, height, &boxes[i], 0, 255, 0);  // 绿色
     }
 
-    // 4. RGB888 编码回 JPEG（使用软件编码器）
+    // 5. RGB888 编码回 JPEG（质量 60，输出更小）
     uint8_t *jpg_buf = NULL;
     size_t jpg_len = 0;
-    bool ok = fmt2jpg(rgb888, width * height * 3, width, height, PIXFORMAT_RGB888, 80, &jpg_buf, &jpg_len);
+    bool ok = fmt2jpg(rgb888, width * height * 3, width, height, PIXFORMAT_RGB888, 60, &jpg_buf, &jpg_len);
     free(rgb888);
     rgb888 = NULL;
 

@@ -8,7 +8,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
-#include "esp_psram.h"
 #include "bt_prov.h"
 #include "camera_stream.h"
 #include "mqtt_client_app.h"
@@ -31,9 +30,14 @@ static void prov_event_handler(bt_prov_event_t event, esp_err_t err, const char 
     case BT_PROV_EVENT_WIFI_CONNECTED:
         ESP_LOGI(TAG, "Wi-Fi connected, IP: %s", info ? info : "");
         http_server_start();
-        mqtt_app_start_from_nvs();
-        mqtt_app_publish_device_status(info);
         s_start_camera = true;
+        /* 尝试从 NVS 加载 MQTT broker 并连接 */
+        if (mqtt_app_start_from_nvs() == ESP_OK) {
+            ESP_LOGI(TAG, "MQTT auto-started from NVS");
+        } else {
+            ESP_LOGI(TAG, "No MQTT broker in NVS (visit /mqtt to configure)");
+        }
+        mqtt_app_publish_device_status(info);
         break;
     case BT_PROV_EVENT_WIFI_DISCONNECTED:
         ESP_LOGW(TAG, "Wi-Fi disconnected");
@@ -52,14 +56,6 @@ static void prov_event_handler(bt_prov_event_t event, esp_err_t err, const char 
 
 void app_main(void)
 {
-    if (esp_psram_get_size() == 0) {
-        ESP_LOGE("BOOT", "PSRAM NOT DETECTED! Check hardware connection.");
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        esp_restart();
-    }
-    ESP_LOGI("BOOT", "PSRAM Size: %d KB", esp_psram_get_size() / 1024);
-    esp_psram_init();
-
     bt_prov_config_t config = {
         .device_name = "ESP32-Provision",
         .event_cb = prov_event_handler,

@@ -49,16 +49,34 @@ static const char INDEX_HTML[] =
 
 static esp_err_t mqtt_config_get_handler(httpd_req_t *req)
 {
-    char page[512];
-    snprintf(page, sizeof(page),
-        "<!DOCTYPE html><html><head><title>MQTT Config</title></head><body>"
+    httpd_resp_set_type(req, "text/html");
+    const char page[] =
+        "<!DOCTYPE html>"
+        "<html><head><title>MQTT Config</title>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<style>"
+        "body{font-family:Arial,sans-serif;max-width:500px;margin:40px auto;padding:0 20px}"
+        "h2{color:#333}label{display:block;margin-top:15px;font-weight:bold}"
+        "input{width:100%;padding:10px;margin-top:5px;box-sizing:border-box;border:1px solid #ccc;border-radius:4px}"
+        "button{width:100%;padding:12px;margin-top:20px;background:#007bff;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:16px}"
+        "button:hover{background:#0056b3}"
+        ".status{margin-top:20px;padding:10px;border-radius:4px}"
+        ".success{background:#d4edda;color:#155724;border:1px solid #c3e6cb}"
+        ".info{background:#d1ecf1;color:#0c5460;border:1px solid #bee5eb}"
+        "a{display:inline-block;margin-top:15px;color:#007bff}"
+        "</style></head><body>"
         "<h2>MQTT Broker Configuration</h2>"
         "<form method='POST' action='/mqtt'>"
-        "Broker URI: <input name='uri' size='40' placeholder='mqtt://broker.example.com:1883'><br><br>"
+        "<label for='uri'>Broker URI</label>"
+        "<input id='uri' name='uri' type='text' placeholder='mqtt://broker.example.com:1883' required>"
         "<button type='submit'>Save &amp; Connect</button>"
-        "</form></body></html>");
-    httpd_resp_set_type(req, "text/html");
-    return httpd_resp_send(req, page, strlen(page));
+        "</form>"
+        "<div class='status info'>"
+        "Topics: esp32s3/status/device &amp; esp32s3/status/camera &amp; esp32s3/control"
+        "</div>"
+        "<a href='/'>Back to Camera</a>"
+        "</body></html>";
+    return httpd_resp_send(req, page, sizeof(page) - 1);
 }
 
 static esp_err_t mqtt_config_post_handler(httpd_req_t *req)
@@ -71,20 +89,20 @@ static esp_err_t mqtt_config_post_handler(httpd_req_t *req)
     }
     buf[len] = '\0';
 
-    /* 解析 uri=xxx（URL 编码，仅处理常见字符，不做完整 decode） */
-    char *val = strstr(buf, "uri=");
+    /* 解析 uri=xxx（支持 URL 编码） */
+    const char *val = strstr(buf, "uri=");
     if (!val) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing uri");
         return ESP_FAIL;
     }
     val += 4;
-    /* 将 %3A -> : 和 %2F -> / 做最小解码 */
+
     char uri[128] = {0};
     int i = 0;
-    for (char *p = val; *p && *p != '&' && i < (int)sizeof(uri) - 1; p++) {
-        if (*p == '%' && *(p+1) && *(p+2)) {
-            char hex[3] = {*(p+1), *(p+2), 0};
-            uri[i++] = (char)strtol(hex, NULL, 16);
+    for (const char *p = val; *p && *p != '&' && i < (int)sizeof(uri) - 1; p++) {
+        if (*p == '%' && p[1] && p[2]) {
+            char h[3] = {p[1], p[2], 0};
+            uri[i++] = (char)strtol(h, NULL, 16);
             p += 2;
         } else if (*p == '+') {
             uri[i++] = ' ';
@@ -93,9 +111,14 @@ static esp_err_t mqtt_config_post_handler(httpd_req_t *req)
         }
     }
 
-    ESP_LOGI(TAG, "MQTT configure: %s", uri);
-    mqtt_app_configure(uri);
+    ESP_LOGI(TAG, "MQTT config: %s", uri);
 
+    esp_err_t err = mqtt_app_configure(uri[0] ? uri : NULL);
+    if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) {
+        ESP_LOGE(TAG, "mqtt_app_configure failed: %s", esp_err_to_name(err));
+    }
+
+    /* 保存后重新显示配置页 */
     httpd_resp_set_status(req, "303 See Other");
     httpd_resp_set_hdr(req, "Location", "/mqtt");
     return httpd_resp_send(req, NULL, 0);
@@ -112,8 +135,6 @@ static esp_err_t detect_handler(httpd_req_t *req)
 {
     uint8_t *jpeg_in = NULL;
     uint8_t *jpeg_out = NULL;
-    char *json_resp = NULL;
-    char *base64_buf = NULL;
     esp_err_t ret = ESP_FAIL;
 
     // 1. 分块读取 POST body
@@ -155,48 +176,45 @@ static esp_err_t detect_handler(httpd_req_t *req)
         return ret;
     }
 
-    // 3. base64 编码
-    size_t base64_len = 0;
-    mbedtls_base64_encode(NULL, 0, &base64_len, jpeg_out, jpeg_out_len);
-    base64_buf = heap_caps_malloc(base64_len + 1, MALLOC_CAP_SPIRAM);
-    if (!base64_buf) {
-        free(jpeg_out);
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
-        return ESP_ERR_NO_MEM;
-    }
+    ESP_LOGI(TAG, "detect: jpeg_out=%zu bytes, free SPIRAM=%u, internal=%u",
+             jpeg_out_len,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
 
-    size_t olen = 0;
-    mbedtls_base64_encode((unsigned char *)base64_buf, base64_len, &olen, jpeg_out, jpeg_out_len);
-    base64_buf[olen] = '\0';
-    free(jpeg_out);
-    jpeg_out = NULL;
+    // 3. 先把 faces JSON 头通过 chunked 发出去，再流式 base64 编码图片，避免一次性大分配
+    httpd_resp_set_type(req, "application/json");
 
-    // 4. 拼装 JSON
-    json_resp = heap_caps_malloc(base64_len + 1024, MALLOC_CAP_SPIRAM);
-    if (!json_resp) {
-        free(base64_buf);
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
-        return ESP_ERR_NO_MEM;
-    }
-
-    int pos = snprintf(json_resp, 512, "{\"count\":%d,\"faces\":[", box_count);
+    char head[512];
+    int hpos = snprintf(head, sizeof(head), "{\"count\":%d,\"faces\":[", box_count);
     for (int i = 0; i < box_count; i++) {
-        pos += snprintf(json_resp + pos, 256,
+        hpos += snprintf(head + hpos, sizeof(head) - hpos,
                        "%s{\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"score\":%.2f}",
                        i > 0 ? "," : "", boxes[i].x, boxes[i].y, boxes[i].w, boxes[i].h, boxes[i].score);
     }
-    pos += snprintf(json_resp + pos, 32, "],\"image\":\"");
-    memcpy(json_resp + pos, base64_buf, olen);
-    pos += olen;
-    strcpy(json_resp + pos, "\"}");
+    hpos += snprintf(head + hpos, sizeof(head) - hpos, "],\"image\":\"");
+    httpd_resp_send_chunk(req, head, hpos);
 
-    free(base64_buf);
+    // 分块对 jpeg_out 做 base64，每块 1.2KB 输入 -> 1.6KB 输出，栈占用很小
+    const size_t CHUNK_IN = 1200;  // 必须是 3 的倍数，base64 才能分块对齐
+    char b64[1600 + 4];
+    for (size_t off = 0; off < jpeg_out_len; off += CHUNK_IN) {
+        size_t in_len = jpeg_out_len - off;
+        if (in_len > CHUNK_IN) in_len = CHUNK_IN;
+        size_t olen = 0;
+        if (mbedtls_base64_encode((unsigned char *)b64, sizeof(b64), &olen,
+                                  jpeg_out + off, in_len) != 0) {
+            ESP_LOGE(TAG, "base64 chunk encode failed");
+            break;
+        }
+        httpd_resp_send_chunk(req, b64, olen);
+    }
 
-    httpd_resp_set_type(req, "application/json");
-    ret = httpd_resp_send(req, json_resp, strlen(json_resp));
-    free(json_resp);
+    free(jpeg_out);
+    jpeg_out = NULL;
 
-    return ret;
+    httpd_resp_send_chunk(req, "\"}", 2);
+    httpd_resp_send_chunk(req, NULL, 0);  // 结束 chunked 传输
+    return ESP_OK;
 }
 
 static const httpd_uri_t uri_detect = {
@@ -481,9 +499,9 @@ esp_err_t camera_stream_init(void)
         .ledc_timer     = LEDC_TIMER_0,
         .ledc_channel   = LEDC_CHANNEL_0,
         .pixel_format   = PIXFORMAT_JPEG,
-        .frame_size     = FRAMESIZE_VGA,
-        .jpeg_quality   = 12,
-        .fb_count       = 2,
+        .frame_size     = FRAMESIZE_QVGA,
+        .jpeg_quality   = 45,
+        .fb_count       = 1,
         .fb_location    = CAMERA_FB_IN_PSRAM,
         .grab_mode      = CAMERA_GRAB_LATEST,
     };
@@ -502,7 +520,7 @@ esp_err_t http_server_start(void)
     if (s_server) return ESP_OK;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port       = 80;
-    config.stack_size        = 16384;
+    config.stack_size        = 8192;
     config.max_uri_handlers  = 10;
     config.recv_wait_timeout = 10;
     config.send_wait_timeout = 10;

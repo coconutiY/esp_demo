@@ -1,28 +1,4 @@
 dependencies:
-  espressif/dl_fft:
-    dependencies: []
-    source:
-      path: managed_components\espressif__dl_fft
-      type: local
-    version: 0.4.0
-  espressif/esp-dl:
-    dependencies: []
-    source:
-      path: managed_components\espressif__esp-dl
-      type: local
-    version: 3.3.4
-  espressif/esp-dsp:
-    dependencies: []
-    source:
-      path: managed_components\espressif__esp-dsp
-      type: local
-    version: 1.8.0
-  espressif/esp-mqtt:
-    dependencies: []
-    source:
-      path: managed_components\espressif__esp-mqtt
-      type: local
-    version: 1.0.0
   espressif/esp32-camera:
     dependencies: []
     source:
@@ -35,25 +11,25 @@ dependencies:
       path: managed_components\espressif__esp_jpeg
       type: local
     version: 1.3.1
-  espressif/esp_new_jpeg:
-    dependencies: []
+  espressif/mqtt:
+    component_hash: ffdad5659706b4dc14bc63f8eb73ef765efa015bf7e9adf71c813d52a2dc9342
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.3'
     source:
-      path: managed_components\espressif__esp_new_jpeg
-      type: local
-    version: 1.0.1
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.0.0
   idf:
     source:
       type: idf
     version: 6.0.1
 direct_dependencies:
-- espressif/dl_fft
-- espressif/esp-dl
-- espressif/esp-dsp
-- espressif/esp-mqtt
 - espressif/esp32-camera
 - espressif/esp_jpeg
-- espressif/esp_new_jpeg
+- espressif/mqtt
 - idf
-manifest_hash: 12c4000d9991ccb4aa2a4294864b6a2fa8068b0eed8e5cffd15b79a649e606f7
+manifest_hash: 37411046fa9129aa16eb43967df81500b578769a6a62795c63f14bdd95e11e4b
 target: esp32s3
 version: 3.0.0
