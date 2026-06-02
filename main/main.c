@@ -11,6 +11,7 @@
 #include "bt_prov.h"
 #include "camera_stream.h"
 #include "mqtt_client_app.h"
+#include "rgb_led.h"
 
 static const char *TAG = "APP";
 static volatile bool s_start_camera = false;
@@ -56,6 +57,8 @@ static void prov_event_handler(bt_prov_event_t event, esp_err_t err, const char 
 
 void app_main(void)
 {
+    rgb_led_init();
+
     bt_prov_config_t config = {
         .device_name = "ESP32-Provision",
         .event_cb = prov_event_handler,

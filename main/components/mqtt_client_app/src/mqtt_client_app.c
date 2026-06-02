@@ -1,4 +1,5 @@
 #include "mqtt_client_app.h"
+#include "rgb_led.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,6 +43,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         break;
     case MQTT_EVENT_DATA:
         ESP_LOGI(TAG, "Control: %.*s", event->data_len, event->data);
+        rgb_led_handle_command(event->data, event->data_len);
         break;
     case MQTT_EVENT_ERROR:
         ESP_LOGE(TAG, "MQTT error");
