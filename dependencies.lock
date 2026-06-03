@@ -1,34 +1,10 @@
 dependencies:
-  espressif/dl_fft:
-    dependencies: []
-    source:
-      path: managed_components\espressif__dl_fft
-      type: local
-    version: 0.4.0
-  espressif/esp-dsp:
-    dependencies: []
-    source:
-      path: managed_components\espressif__esp-dsp
-      type: local
-    version: 1.8.0
-  espressif/esp32-camera:
-    dependencies: []
-    source:
-      path: managed_components\espressif__esp32-camera
-      type: local
-    version: 2.1.6
   espressif/esp_jpeg:
     dependencies: []
     source:
       path: managed_components\espressif__esp_jpeg
       type: local
     version: 1.3.1
-  espressif/esp_new_jpeg:
-    dependencies: []
-    source:
-      path: managed_components\espressif__esp_new_jpeg
-      type: local
-    version: 1.0.1
   espressif/mqtt:
     dependencies: []
     source:
@@ -40,13 +16,9 @@ dependencies:
       type: idf
     version: 6.0.1
 direct_dependencies:
-- espressif/dl_fft
-- espressif/esp-dsp
-- espressif/esp32-camera
 - espressif/esp_jpeg
-- espressif/esp_new_jpeg
 - espressif/mqtt
 - idf
-manifest_hash: a250bf5757d6a10353638c1a7f67d1db27dd13f6c5fd165c939c83808a389d46
+manifest_hash: 9c0dd832c76bdf1e5ab0425fb22c251c5b1524c2ca8af58ecb181149f3430f13
 target: esp32s3
 version: 3.0.0

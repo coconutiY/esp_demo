@@ -468,11 +468,6 @@ esp_err_t bt_prov_init(const bt_prov_config_t *config)
         return err;
     }
 
-    err = esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "Bluetooth controller memory release returned %s", esp_err_to_name(err));
-    }
-
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
     err = esp_bt_controller_init(&bt_cfg);
     if (err != ESP_OK) {

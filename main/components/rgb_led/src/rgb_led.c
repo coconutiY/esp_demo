@@ -1,4 +1,5 @@
 #include "rgb_led.h"
+#include "mqtt_client_app.h"
 #include "driver/ledc.h"
 #include "esp_log.h"
 #include <string.h>
@@ -57,11 +58,21 @@ void rgb_led_set_level(int gpio_num, uint8_t level)
 
     for (int i = 0; i < 3; i++) {
         if (s_channels[i].gpio == gpio_num) {
-            // LEDC duty 是 0~255 对应 0%~100%
             uint32_t duty = (uint32_t)level;
             ledc_set_duty(LEDC_LOW_SPEED_MODE, s_channels[i].ch, duty);
             ledc_update_duty(LEDC_LOW_SPEED_MODE, s_channels[i].ch);
             ESP_LOGI(TAG, "G%d level=%u", gpio_num, level);
+            char msg[96];
+            if (level == 0) {
+                snprintf(msg, sizeof(msg),
+                         "{\"type\":\"led\",\"event\":\"off\",\"data\":{\"gpio\":%d}}",
+                         gpio_num);
+            } else {
+                snprintf(msg, sizeof(msg),
+                         "{\"type\":\"led\",\"event\":\"level\",\"data\":{\"gpio\":%d,\"level\":%u}}",
+                         gpio_num, level);
+            }
+            mqtt_app_publish_status(msg);
             return;
         }
     }
@@ -75,6 +86,11 @@ void rgb_led_set_rgb(uint8_t r, uint8_t g, uint8_t b)
     rgb_led_set_level(RGB_PIN_G, g);
     rgb_led_set_level(RGB_PIN_B, b);
     ESP_LOGI(TAG, "RGB=%u %u %u", r, g, b);
+    char msg[128];
+    snprintf(msg, sizeof(msg),
+             "{\"type\":\"led\",\"event\":\"rgb\",\"data\":{\"r\":%u,\"g\":%u,\"b\":%u}}",
+             r, g, b);
+    mqtt_app_publish_status(msg);
 }
 
 void rgb_led_off(void)
