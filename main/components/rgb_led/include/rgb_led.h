@@ -4,8 +4,8 @@
 
 // GPIO 引脚定义
 #define RGB_PIN_R  45
-#define RGB_PIN_G  20
-#define RGB_PIN_B  48
+#define RGB_PIN_G  48
+#define RGB_PIN_B  47
 
 // 初始化 RGB LED（PWM 模式，频率 1kHz）
 void rgb_led_init(void);

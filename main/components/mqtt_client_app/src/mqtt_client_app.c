@@ -2,6 +2,7 @@
 #include "rgb_led.h"
 #include "temperature_dht11.h"
 #include "sound_detect.h"
+#include "ir_remote.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -66,6 +67,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                          esp_err_to_name(ret));
             }
             mqtt_app_publish_status(msg);
+        } else if (dlen >= 3 && strncmp(d, "ir_", 3) == 0) {
+            ir_remote_handle_command(d, dlen);
         } else {
             rgb_led_handle_command(d, dlen);
         }

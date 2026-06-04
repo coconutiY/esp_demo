@@ -1,10 +1,4 @@
 dependencies:
-  espressif/esp_jpeg:
-    dependencies: []
-    source:
-      path: managed_components\espressif__esp_jpeg
-      type: local
-    version: 1.3.1
   espressif/mqtt:
     dependencies: []
     source:
@@ -16,9 +10,8 @@ dependencies:
       type: idf
     version: 6.0.1
 direct_dependencies:
-- espressif/esp_jpeg
 - espressif/mqtt
 - idf
-manifest_hash: 9c0dd832c76bdf1e5ab0425fb22c251c5b1524c2ca8af58ecb181149f3430f13
+manifest_hash: 655b4b9c2628acb4312f31168c767ff95b0de2a97012399b8c84933b30cc83bd
 target: esp32s3
 version: 3.0.0

@@ -1,3 +1,3 @@
 idf_component_register(SRCS "main.c"
-                       PRIV_REQUIRES spi_flash bt_prov camera_stream esp_psram mqtt_client_app rgb_led temperature_dht11 sound_detect
+                       PRIV_REQUIRES spi_flash bt_prov camera_stream esp_psram mqtt_client_app rgb_led temperature_dht11 sound_detect ir_remote
                        INCLUDE_DIRS "")

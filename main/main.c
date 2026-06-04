@@ -15,6 +15,7 @@
 #include "rgb_led.h"
 #include "temperature_dht11.h"
 #include "sound_detect.h"
+#include "ir_remote.h"
 
 static const char *TAG = "APP";
 
@@ -31,6 +32,7 @@ static void wifi_connected_task(void *arg)
     mqtt_app_publish_device_status(ip_str);
     dht11_start(30);
     sound_detect_start();
+    ir_remote_start();
 
     free(ip_str);
     vTaskDelete(NULL);
