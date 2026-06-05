@@ -16,6 +16,7 @@
 #include "temperature_dht11.h"
 #include "sound_detect.h"
 #include "ir_remote.h"
+#include "hc_sr04.h"
 
 static const char *TAG = "APP";
 
@@ -33,6 +34,7 @@ static void wifi_connected_task(void *arg)
     dht11_start(30);
     sound_detect_start();
     ir_remote_start();
+    hc_sr04_start(2);
 
     free(ip_str);
     vTaskDelete(NULL);

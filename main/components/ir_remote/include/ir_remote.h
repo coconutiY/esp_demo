@@ -2,8 +2,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define IR_TX_GPIO 40   // 红外发射管
-#define IR_RX_GPIO 41   // 红外一体化接收头
+#define IR_TX_GPIO 3   // 红外发射管
+#define IR_RX_GPIO 14   // 红外一体化接收头
 
 // 初始化红外收发（RMT TX/RX），接收默认关闭
 void ir_remote_start(void);
