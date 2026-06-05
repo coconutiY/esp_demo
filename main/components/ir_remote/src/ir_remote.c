@@ -149,16 +149,43 @@ static bool nec_decode(const rmt_symbol_word_t *sym, size_t num,
     uint8_t c  = (data >> 16) & 0xFF;
     uint8_t nc = (data >> 24) & 0xFF;
 
-    // 标准 NEC 反码校验
-    if ((a ^ na) != 0xFF || (c ^ nc) != 0xFF) {
-        ESP_LOGW(TAG, "NEC checksum mismatch (raw=0x%08lX), maybe extended NEC",
-                 (unsigned long)data);
-        return false;
+    // 标准 NEC：地址反码=0xFF 且 命令反码=0xFF
+    if ((a ^ na) == 0xFF && (c ^ nc) == 0xFF) {
+        *addr = a;
+        *cmd  = c;
+        return true;
     }
 
-    *addr = a;
-    *cmd  = c;
-    return true;
+    // 扩展 NEC：16 位地址（地址+地址反码各占 16bit），命令仍为 8+8
+    uint16_t addr16 = data & 0xFFFF;
+    uint16_t addr16n = (data >> 16) & 0xFFFF;
+    uint8_t  cmd8 = (data >> 16) & 0xFF;
+    uint8_t  cmd8n   = (data >> 24) & 0xFF;
+    if ((addr16 ^ addr16n) == 0xFFFF && (cmd8 ^ cmd8n) == 0xFF) {
+        *addr = (uint8_t)(addr16 & 0xFF);  // 取低8 位地址
+        *cmd  = cmd8;
+        return true;
+    }
+
+    ESP_LOGW(TAG, "NEC checksum mismatch raw=0x%08lX", (unsigned long)data);
+    return false;
+}
+
+// 把 symbol 时序打印为 16 进制串，供调试用
+static void nec_dump_symbols(const rmt_symbol_word_t *sym, size_t num)
+{
+    char hex_str[128] = {0};
+    int pos = 0;
+    int n = (num < 16 ? num : 16);
+    for (int i = 0; i < n && pos < (int)sizeof(hex_str) - 8; i++) {
+        pos += snprintf(hex_str + pos, sizeof(hex_str) - pos,
+                        "%s%u/%u",
+                        i > 0 ? " " : "",
+                        (unsigned)sym[i].duration0,
+                        (unsigned)sym[i].duration1);
+    }
+    ESP_LOGI(TAG, "IR symbols(%u): %s%s", (unsigned)num, hex_str,
+             num > 16 ? " ..." : "");
 }
 
 static void ir_rx_task(void *arg)
@@ -187,7 +214,21 @@ static void ir_rx_task(void *arg)
                     mqtt_app_publish_status(msg);
                 }
             } else {
-                ESP_LOGD(TAG, "Unrecognized IR frame, %u symbols", (unsigned)num);
+                // 未识别帧：打印时序 + 上报原始数据供调试
+                nec_dump_symbols(s_rx_symbols, num);
+                uint32_t raw = 0;
+                for (int i = 0; i < 32; i++) {
+                    const rmt_symbol_word_t *b = &s_rx_symbols[1 + i];
+                    if (nec_in_range(b->duration1, NEC_ONE_LOW)) {
+                        raw |= (1u << i);
+                    }
+                }
+                char msg[128];
+                snprintf(msg, sizeof(msg),
+                         "{\"type\":\"ir\",\"event\":\"unknown\",\"data\":"
+                         "{\"raw\":%lu}}",
+                         (unsigned long)raw);
+                mqtt_app_publish_status(msg);
             }
         }
 
